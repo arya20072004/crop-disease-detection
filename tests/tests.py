@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import io
 from fastapi.testclient import TestClient
-from api import app, CropDiseaseClassifier, val_transform, DEVICE, CLASS_NAMES
+from backend.api import app, CropDiseaseClassifier, val_transform, DEVICE, CLASS_NAMES
 
 client = TestClient(app)
 
@@ -62,8 +62,8 @@ class TestDataPreprocessing:
 
     def test_transform_normalization(self):
         """Test 6: Normalization values are applied"""
-        img = np.ones((380, 380, 3), dtype=np.uint8) * 255
-        transformed = val_transform(image=img)['image']
+        img_array = np.random.randint(0, 256, (380, 380, 3), dtype=np.uint8)
+        transformed = val_transform(image=img_array)['image']
 
         # Check that values are normalized (should be positive after normalization)
         assert transformed.mean() > 0
@@ -86,7 +86,7 @@ class TestModelLoading:
         import json
         from pathlib import Path
 
-        configs = ['class_names.json', 'lstm_config.json', 'fusion_config.json']
+        configs = ['models/configs/class_names.json', 'models/configs/lstm_config.json', 'models/configs/fusion_config.json']
         for config in configs:
             assert (Path('.') / config).exists()
 

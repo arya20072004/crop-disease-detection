@@ -23,21 +23,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from increment_1_cnn.leafseg import segment_leaf, SegmentationResult
-from increment_1_cnn.disease_localisation import localise_disease, LocalisationResult
-from increment_1_cnn.image_quality import check_image_quality, QualityResult
+from backend.modules.leafseg import segment_leaf, SegmentationResult
+from backend.modules.disease_localisation import localise_disease, LocalisationResult
+from backend.modules.image_quality import check_image_quality, QualityResult
  
 warnings.filterwarnings('ignore')
 
-BASE_DIR = Path('.')
+BASE_DIR = Path(__file__).parent.parent
 DEVICE   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
  
 print(f"Loading models on {DEVICE}...")
  
 # ── Load configs ──
-with open(BASE_DIR / 'class_names.json')   as f: CLASS_NAMES   = json.load(f)
-with open(BASE_DIR / 'lstm_config.json')   as f: lstm_cfg       = json.load(f)
-with open(BASE_DIR / 'fusion_config.json') as f: fusion_cfg     = json.load(f)
+with open(BASE_DIR / 'models/configs/class_names.json')   as f: CLASS_NAMES   = json.load(f)
+with open(BASE_DIR / 'models/configs/lstm_config.json')   as f: lstm_cfg       = json.load(f)
+with open(BASE_DIR / 'models/configs/fusion_config.json') as f: fusion_cfg     = json.load(f)
  
 NUM_CLASSES      = len(CLASS_NAMES)
 WEATHER_FEATURES = lstm_cfg['weather_features']
@@ -92,27 +92,47 @@ class CropDiseaseClassifier(nn.Module):
             return self.embedding(x)
  
     def grad_cam(self, tensor, class_idx=None):
+        """Concurrency-safe Grad-CAM. Does NOT touch requires_grad on any
+        model parameter — uses torch.autograd.grad on a single retained
+        feature tensor instead of .backward() through the whole graph."""
         self.eval()
-        x      = tensor.unsqueeze(0).to(DEVICE)
-        logits = self.forward(x)
-        if class_idx is None:
-            class_idx = logits.argmax(dim=1).item()
-        self.zero_grad()
-        logits[0, class_idx].backward()
-        weights = self._feat_grads.mean(dim=[2, 3], keepdim=True)
-        cam     = (weights * self._feat_maps).sum(dim=1).squeeze()
+        x = tensor.unsqueeze(0).to(DEVICE)
+
+        with torch.enable_grad():
+            # Forward through feature extractor, retain grad on feat map
+            feat = self.features(x)
+            feat.retain_grad()
+
+            # Continue forward through avgpool → embedding → classifier
+            pooled = self.avgpool(feat)
+            flat   = torch.flatten(pooled, 1)
+            logits = self.classifier(self.embedding(flat))
+
+            if class_idx is None:
+                class_idx = logits.argmax(dim=1).item()
+
+            score = logits[0, class_idx]
+
+            # Targeted gradient w.r.t. feature tensor only
+            (grad,) = torch.autograd.grad(
+                score, feat, retain_graph=False
+            )
+
+        # Grad-CAM: channel-wise mean of gradients as weights
+        weights = grad.mean(dim=[2, 3], keepdim=True)
+        cam     = (weights * feat.detach()).sum(dim=1).squeeze()
         cam     = torch.clamp(cam, min=0)
         cam     = cam / (cam.max() + 1e-8)
-        conf    = logits.softmax(dim=1)[0, class_idx].item()
+        conf    = logits.detach().softmax(dim=1)[0, class_idx].item()
         return cam.detach().cpu().numpy(), class_idx, conf
  
  
 cnn_model = CropDiseaseClassifier(num_classes=NUM_CLASSES).to(DEVICE)
 cnn_model.load_state_dict(
-    torch.load(BASE_DIR / 'best_model_v2.pth', map_location=DEVICE))
+    torch.load(BASE_DIR / 'models/weights/best_model_v2.pth', map_location=DEVICE))
 cnn_model.eval()
 for p in cnn_model.parameters(): p.requires_grad = False
-print("CNN loaded ✓")
+print("CNN loaded OK")
  
 # ── LSTM ──
 class TemporalAttention(nn.Module):
@@ -157,7 +177,7 @@ lstm_model = WeatherLSTM(
     n_diseases=N_DISEASES, dropout=lstm_cfg['dropout']
 ).to(DEVICE)
 lstm_model.load_state_dict(
-    torch.load(BASE_DIR / 'best_lstm.pth', map_location=DEVICE))
+    torch.load(BASE_DIR / 'models/weights/best_lstm.pth', map_location=DEVICE))
 lstm_model.eval()
 for p in lstm_model.parameters(): p.requires_grad = False
 print("LSTM loaded ✓")
@@ -217,23 +237,23 @@ fusion_model = CrossAttentionFusion(
     n_diseases=N_DISEASES, attn_dim=256, n_heads=8, dropout=0.3
 ).to(DEVICE)
 fusion_model.load_state_dict(
-    torch.load(BASE_DIR / 'best_fusion.pth', map_location=DEVICE))
+    torch.load(BASE_DIR / 'models/weights/best_fusion.pth', map_location=DEVICE))
 fusion_model.eval()
 print("Fusion model loaded ✓")
  
 # ── Calibrators, XGBoost, scaler ──
-with open(BASE_DIR / 'calibrators.pkl', 'rb') as f:
+with open(BASE_DIR / 'models/configs/calibrators.pkl', 'rb') as f:
     calibrators = pickle.load(f)
-with open(BASE_DIR / 'weather_scaler.pkl', 'rb') as f:
+with open(BASE_DIR / 'models/configs/weather_scaler.pkl', 'rb') as f:
     weather_scaler = pickle.load(f)
 xgb_model = xgb.XGBRegressor()
-xgb_model.load_model(str(BASE_DIR / 'yield_model.json'))
+xgb_model.load_model(str(BASE_DIR / 'models/configs/yield_model.json'))
 print("Calibrators, scaler, XGBoost loaded ✓")
  
 # ── Weather data ──
-weather_df = pd.read_csv(BASE_DIR / 'weather_features.csv',
+weather_df = pd.read_csv(BASE_DIR / 'data/weather_features.csv',
                           index_col=0, parse_dates=True)
-dcws_df    = pd.read_csv(BASE_DIR / 'dcws_scores.csv',
+dcws_df    = pd.read_csv(BASE_DIR / 'data/dcws_scores.csv',
                           index_col=0, parse_dates=True)
 print(f"Weather data loaded: {len(weather_df)} days ✓")
 print("All models ready. Starting API...")
@@ -307,6 +327,37 @@ def numpy_to_b64(img_array: np.ndarray) -> str:
     return base64.b64encode(buf).decode('utf-8')
  
  
+def preprocess_and_validate(img_array: np.ndarray) -> dict:
+    """Pre-inference gate: reject bad images, then segment the leaf.
+    Returns {'image_for_cnn': np.ndarray, 'diagnostics': dict}.
+    Raises HTTPException(422) if the image fails quality checks."""
+    quality = check_image_quality(img_array)
+    if not quality.passed:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                'error': 'image_quality_rejected',
+                'reason': quality.retake_reason,
+                'suggestions': quality.suggestions,
+                'score': quality.score,
+                'metrics': quality.metrics,
+            }
+        )
+
+    seg = segment_leaf(img_array)
+
+    diagnostics = {
+        'quality_score': quality.score,
+        'quality_warnings': [
+            issue.message for issue in quality.issues if issue.level == 'soft'
+        ],
+        'segmentation_method': seg.method_used,
+        'leaf_coverage': round(seg.leaf_coverage, 3),
+        'segmentation_warning': seg.warning,
+    }
+    return {'image_for_cnn': seg.segmented_image, 'diagnostics': diagnostics}
+
+
 def run_gradcam(image_array : np.ndarray,
                     class_idx   : int,
                     leaf_mask   : np.ndarray = None) -> dict:
@@ -1980,7 +2031,7 @@ def _run_analyze_sync(
     }
 
 @app.post("/analyze")
-async def analyze(
+def analyze(
     file                : UploadFile = File(...),
     lat                 : float = 18.5204,
     lon                 : float = 73.8567,
@@ -1997,44 +2048,138 @@ async def analyze(
     # user taps "Show Heatmap", not on every analysis.
     include_gradcam     : bool  = False,
 ):
-    img_bytes = await file.read()
-    
-    # Quality gate
-    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-    img_np = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if img_np is None:
-        raise HTTPException(status_code=400, detail="Could not decode uploaded image")
-    quality = check_image_quality(img_np)
-    if not quality.passed:
+    # ── Validate content type ──
+    allowed_types = {"image/jpeg", "image/png", "image/webp"}
+    if file.content_type not in allowed_types:
         raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "image_quality_rejected",
-                "reason": quality.retake_reason,
-                "suggestions": quality.suggestions,
-                "score": quality.score,
-                "metrics": quality.metrics,
-            }
+            status_code=415,
+            detail=f"Unsupported file type: {file.content_type}. "
+                   f"Accepted: {', '.join(sorted(allowed_types))}"
         )
- 
-    loop   = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        _executor,
-        _run_analyze_sync,
-        img_bytes,
-        crop_type,
-        growth_stage,
-        days_since_planting,
-        days_to_harvest,
-        area_ha,
-        market_price_per_kg,
-        n_mc_passes,
-        include_gradcam,
-        lat,
-        lon,
-        quality,
-    )
-    return result
+
+    # ── Read bytes (sync — not async) ──
+    img_bytes = file.file.read()
+
+    # ── File-size guard (15 MB) ──
+    if len(img_bytes) > 15 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Maximum upload size is 15 MB."
+        )
+
+    # ── Decode to numpy RGB array ──
+    try:
+        pil_img   = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        img_array = np.array(pil_img)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not decode image. Please upload a valid JPEG, PNG, or WebP file."
+        )
+
+    # ── Pre-inference quality gate + segmentation (FIX 3) ──
+    pv = preprocess_and_validate(img_array)
+    segmented_image = pv['image_for_cnn']
+    diagnostics     = pv['diagnostics']
+
+    # ── CNN inference on the segmented image ──
+    resized = cv2.resize(segmented_image, (IMG_SIZE, IMG_SIZE))
+    tensor  = val_transform(image=resized)['image'].unsqueeze(0).to(DEVICE)
+    with torch.inference_mode():
+        logits = cnn_model(tensor)
+        probs  = torch.softmax(logits, dim=1)[0]
+        cnn_class = int(probs.argmax())
+        cnn_conf  = float(probs[cnn_class])
+        top5 = [
+            {'class': CLASS_NAMES[i], 'prob': float(probs[i])}
+            for i in probs.argsort(descending=True)[:5]
+        ]
+        embedding = cnn_model.get_embedding(tensor).squeeze(0).cpu().numpy()
+
+    # ── Confidence threshold check ──
+    low_confidence = cnn_conf < 0.45
+
+    # ── LSTM ──
+    feat      = weather_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
+    feat_norm = weather_scaler.transform(feat)
+    wx_tensor = torch.tensor(feat_norm).unsqueeze(0).to(DEVICE)
+    with torch.inference_mode():
+        forecast_raw, wx_ctx, _ = lstm_model(wx_tensor)
+    lstm_forecast = forecast_raw[0].cpu().numpy()
+    lstm_ctx      = wx_ctx.cpu().numpy()
+
+    # ── Fusion ──
+    meta_vec     = encode_metadata(crop_type, growth_stage,
+                                   days_since_planting, days_to_harvest)
+    fusion_input = torch.tensor(
+        np.concatenate([embedding.reshape(1, -1),
+                        lstm_ctx.reshape(1, -1),
+                        meta_vec.reshape(1, -1)], axis=1),
+        dtype=torch.float32
+    ).to(DEVICE)
+    mean_probs, std_probs = fusion_model.predict_with_uncertainty(
+        fusion_input, n_passes=n_mc_passes)
+    mean_probs = mean_probs[0].cpu().numpy()
+    std_probs  = std_probs[0].cpu().numpy()
+    cal_probs  = np.array([
+        calibrators[d].predict([mean_probs[i]])[0]
+        for i, d in enumerate(DISEASE_CLASSES)
+    ])
+    top_idx     = int(cal_probs.argmax())
+    top_disease = DISEASE_CLASSES[top_idx]
+    top_risk    = float(cal_probs[top_idx])
+    top_unc     = float(std_probs[top_idx])
+
+    # ── Yield & intervention ──
+    meta = {
+        'crop_type': crop_type, 'growth_stage': growth_stage,
+        'days_since_planting': days_since_planting,
+        'days_to_harvest': days_to_harvest,
+        'area_ha': area_ha, 'market_price_per_kg': market_price_per_kg,
+    }
+    cnn_info    = {'cnn_class': cnn_class, 'cnn_conf': cnn_conf}
+    fusion_info = {
+        'top_idx': top_idx, 'top_disease': top_disease,
+        'top_risk': top_risk, 'top_uncertainty': top_unc,
+        'fusion_calibrated': cal_probs.tolist(),
+        'fusion_uncertainty': std_probs.tolist(),
+        'forecast_raw': lstm_forecast.tolist(),
+    }
+    extras = assemble_forecast_and_yield(cnn_info, fusion_info, meta)
+
+    # ── Grad-CAM on the SEGMENTED image (visual consistency) ──
+    if include_gradcam:
+        with torch.enable_grad():
+            gradcam_result = run_gradcam(segmented_image, cnn_class)
+    else:
+        gradcam_result = None
+
+    return {
+        'cnn': {
+            'detected': CLASS_NAMES[cnn_class],
+            'confidence': cnn_conf,
+            'low_confidence': low_confidence,
+            'top5': top5,
+        },
+        'fusion': {
+            'top_disease': top_disease,
+            'risk_score': top_risk,
+            'uncertainty': top_unc,
+            'top5': [
+                {
+                    'disease': DISEASE_CLASSES[i],
+                    'probability': float(cal_probs[i]),
+                    'uncertainty': float(std_probs[i]),
+                }
+                for i in np.argsort(cal_probs)[::-1][:5]
+            ],
+        },
+        **extras,
+        'gradcam': gradcam_result,
+        'image_diagnostics': diagnostics,
+        'location': {'lat': lat, 'lon': lon},
+        'timestamp': datetime.now().isoformat(),
+    }
 
 
 @app.get("/result/{job_id}")

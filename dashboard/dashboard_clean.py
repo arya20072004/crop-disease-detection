@@ -167,7 +167,7 @@ hr { border-color: rgba(74,222,128,0.12) !important; }
     font-family: 'Space Mono', monospace;
     font-size: 0.78rem;
 }
-.stTabs [aria-selected="true"] {
+.stTabs [aria-selected="data/true"] {
     background: rgba(74,222,128,0.15) !important;
     color: #4ade80 !important;
 }
@@ -542,7 +542,7 @@ with tab4:
 
     col_s1, col_s2 = st.columns([3, 1])
     with col_s1:
-        search_term = st.text_input("🔍 Search Crop ID or Disease", "")
+        search_term = st.text_input("data/🔍 Search Crop ID or Disease", "")
     with col_s2:
         n_rows = st.selectbox("Rows to display", [20, 50, 100, 200], index=0)
 
@@ -580,7 +580,7 @@ with tab4:
     with col_dl1:
         csv_data = df[display_cols].to_csv(index=False).encode("utf-8")
         st.download_button("⬇ Download Filtered Data (CSV)", csv_data,
-                           file_name="cropguard_data.csv", mime="text/csv")
+                           file_name="cropguard_data.csv", mime="data/text/csv")
     with col_dl2:
         summary = df.describe().round(2)
         sum_csv = summary.to_csv().encode("utf-8")
