@@ -101,7 +101,6 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
     try {
       await _db.saveCrop({
         'crop_name'           : _cropType,
-        'stage'               : _growthStage,
         'days_since_planting' : _dsp,
         'days_to_harvest'     : _dth,
         'area_ha'             : _areaHa,
@@ -132,9 +131,8 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
       try {
         predictionId = await _db.savePrediction({
           'crop_name'   : _cropType,
-          'stage'       : _growthStage,
-          'lat'         : _lat,
-          'lon'         : _lon,
+          'lat_snapshot'         : _lat,
+          'lon_snapshot'         : _lon,
           'disease'     : result.cnn?.detected,
           'confidence'  : result.cnn?.confidence,
           'risk'        : result.fusion?.riskScore,

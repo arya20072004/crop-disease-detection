@@ -32,8 +32,8 @@ class AnalysisResult {
       intervention: InterventionData.fromJson(j['intervention']),
       // Build meta from top-level fields
       meta: MetaData(
-        cropType: j['cnn']?['detected'] ?? '',
-        growthStage: '',
+        cropTypeSnapshot: j['cnn']?['detected'] ?? '',
+        growthStageSnapshot: '',
         location: Map<String, double>.from(
           (j['location'] ?? {}).map((k, v) => MapEntry(k, (v as num).toDouble())),
         ),
@@ -271,21 +271,21 @@ class InterventionData {
 }
 
 class MetaData {
-  final String cropType;
-  final String growthStage;
+  final String cropTypeSnapshot;
+  final String growthStageSnapshot;
   final Map<String, double> location;
   final String timestamp;
 
   MetaData({
-    required this.cropType,
-    required this.growthStage,
+    required this.cropTypeSnapshot,
+    required this.growthStageSnapshot,
     required this.location,
     required this.timestamp,
   });
 
   factory MetaData.fromJson(Map<String, dynamic> j) => MetaData(
-        cropType: j['crop_type'] ?? '',
-        growthStage: j['growth_stage'] ?? '',
+        cropTypeSnapshot: j['crop_type_snapshot'] ?? '',
+        growthStageSnapshot: j['growth_stage_snapshot'] ?? '',
         location: Map<String, double>.from(
           (j['location'] ?? {}).map((k, v) => MapEntry(k, (v as num).toDouble())),
         ),
@@ -293,8 +293,8 @@ class MetaData {
       );
 
   Map<String, dynamic> toJson() => {
-        'crop_type': cropType,
-        'growth_stage': growthStage,
+        'crop_type_snapshot': cropTypeSnapshot,
+        'growth_stage_snapshot': growthStageSnapshot,
         'location': location,
         'timestamp': timestamp,
       };

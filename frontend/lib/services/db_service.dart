@@ -45,7 +45,7 @@ class DBService {
   // ── Forecasts ─────────────────────────────────────────────────────────────
 
   /// Saves the top forecast risks to the `forecasts` table.
-  /// Schema: id, user_id, disease, risk_today, risk_day7, highest_risk, created_at
+  /// Schema: id, user_id, disease, daily_risk, highest_risk, forecast_start_date, forecast_end_date, created_at
   Future<void> saveForecast({
     required List<Map<String, dynamic>> diseases,
   }) async {
@@ -63,9 +63,10 @@ class DBService {
       return {
         'user_id'     : user.id,
         'disease'     : d['disease'],
-        'risk_today'  : daily.isNotEmpty ? daily.first : d['peak_risk'],
-        'risk_day7'   : daily.length >= 7 ? daily[6]  : d['peak_risk'],
+        'daily_risk'  : daily,
         'highest_risk': d['peak_risk'],
+        'forecast_start_date': DateTime.now().add(const Duration(days: 1)).toIso8601String().substring(0, 10),
+        'forecast_end_date': DateTime.now().add(const Duration(days: 7)).toIso8601String().substring(0, 10),
         'created_at'  : DateTime.now().toIso8601String(),
       };
     }).toList();

@@ -53,14 +53,14 @@ class _ForecastScreenState extends State<ForecastScreen> {
             'level': d.level,
           }).toList()}));
 
-      // Save forecast to Supabase — schema: risk_today, risk_day7, highest_risk
+      // Save forecast to Supabase
       try {
         await _db.saveForecast(
           diseases: result.diseases.take(10).map((d) => {
             'disease'  : d.disease,
             'peak_risk': d.peakRisk,
             'level'    : d.level,
-            'daily'    : d.daily,   // needed to extract risk_today / risk_day7
+            'daily'    : d.daily,   // needed to extract daily_risk
           }).toList(),
         );
       } catch (e) {
