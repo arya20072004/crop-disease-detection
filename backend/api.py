@@ -1,4 +1,5 @@
-import io, json, pickle, base64, warnings, asyncio, uuid, os, urllib.request, urllib.error
+import io, json, pickle, base64, warnings, asyncio, uuid, os, urllib.request, urllib.error, time
+import requests as _requests
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -250,12 +251,165 @@ xgb_model = xgb.XGBRegressor()
 xgb_model.load_model(str(BASE_DIR / 'models/configs/yield_model.json'))
 print("Calibrators, scaler, XGBoost loaded ✓")
  
-# ── Weather data ──
+# ── Weather data (static fallback) ──
 weather_df = pd.read_csv(BASE_DIR / 'data/weather_features.csv',
                           index_col=0, parse_dates=True)
 dcws_df    = pd.read_csv(BASE_DIR / 'data/dcws_scores.csv',
                           index_col=0, parse_dates=True)
 print(f"Weather data loaded: {len(weather_df)} days ✓")
+
+# ── Live weather fetching + caching ──
+WEATHER_CACHE = {}   # key: (rounded_lat, rounded_lon) → {'df': DataFrame, 'timestamp': float}
+CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+
+
+def _fetch_nasa_power(lat, lon, start_date, end_date):
+    """Fetch daily weather from NASA POWER API.
+    Adapted from scripts/increment_2_lstm.py — same parameters.
+    """
+    url = "https://power.larc.nasa.gov/api/temporal/daily/point"
+    params = {
+        'parameters': 'T2M_MAX,T2M_MIN,T2M,PRECTOTCORR,RH2M,WS10M,ALLSKY_SFC_SW_DWN',
+        'community' : 'AG',
+        'longitude' : lon,
+        'latitude'  : lat,
+        'start'     : start_date.replace('-', ''),
+        'end'       : end_date.replace('-', ''),
+        'format'    : 'JSON',
+    }
+    resp = _requests.get(url, params=params, timeout=60)
+    resp.raise_for_status()
+    data  = resp.json()
+    props = data['properties']['parameter']
+
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    vals  = list(props['T2M'].values())
+    df = pd.DataFrame({
+        'temp_max'       : list(props['T2M_MAX'].values()),
+        'temp_min'       : list(props['T2M_MIN'].values()),
+        'temp_mean'      : vals,
+        'precipitation'  : list(props['PRECTOTCORR'].values()),
+        'humidity_max'   : list(props['RH2M'].values()),
+        'humidity_min'   : list(props['RH2M'].values()),
+        'windspeed'      : list(props['WS10M'].values()),
+        'solar_radiation': list(props['ALLSKY_SFC_SW_DWN'].values()),
+        'et0'            : list(props['PRECTOTCORR'].values()),
+    }, index=dates[:len(vals)])
+    df.replace(-999.0, np.nan, inplace=True)
+    df = df.interpolate()
+    return df
+
+
+def _engineer_features(df):
+    """Feature engineering for weather data.
+    Adapted from scripts/increment_2_lstm.py — produces the exact
+    columns expected by WEATHER_FEATURES.
+    """
+    df = df.copy()
+    df = df.interpolate(method='linear').ffill().bfill()
+
+    # VPD (Vapour Pressure Deficit)
+    df['svp']           = 0.6108 * np.exp((17.27 * df['temp_mean']) /
+                                           (df['temp_mean'] + 237.3))
+    df['humidity_mean']  = (df['humidity_max'] + df['humidity_min']) / 2
+    df['avp']           = df['svp'] * (df['humidity_mean'] / 100)
+    df['vpd']           = (df['svp'] - df['avp']).clip(lower=0)
+
+    # Temperature features
+    df['temp_range']  = df['temp_max'] - df['temp_min']
+    df['heat_stress'] = (df['temp_max'] > 35).astype(float)
+
+    # Precipitation features
+    df['wet_day']     = (df['precipitation'] > 1.0).astype(float)
+    df['wet_days_7d'] = df['wet_day'].rolling(7, min_periods=1).sum()
+    df['precip_7d']   = df['precipitation'].rolling(7, min_periods=1).sum()
+    df['precip_30d']  = df['precipitation'].rolling(30, min_periods=1).sum()
+
+    # Humidity features
+    df['humidity_7d_mean'] = df['humidity_mean'].rolling(7, min_periods=1).mean()
+
+    # Solar radiation normalised
+    df['solar_norm'] = df['solar_radiation'] / (df['solar_radiation'].max() + 1e-8)
+
+    # Season encoding
+    month           = df.index.month
+    df['month_sin'] = np.sin(2 * np.pi * month / 12)
+    df['month_cos'] = np.cos(2 * np.pi * month / 12)
+
+    # Drop intermediate columns
+    df.drop(columns=['svp', 'avp', 'wet_day'], inplace=True)
+    return df
+
+
+def get_live_weather(lat, lon):
+    """Fetch live weather for a location, with caching and graceful fallback.
+
+    Returns:
+        (weather_dataframe, used_live_data: bool, data_as_of_date: str)
+    """
+    # Round to 1 decimal (~11 km) for cache key
+    rlat = round(lat, 1)
+    rlon = round(lon, 1)
+    cache_key = (rlat, rlon)
+
+    # Check cache
+    now = time.time()
+    cached = WEATHER_CACHE.get(cache_key)
+    if cached is not None and (now - cached['timestamp']) < CACHE_TTL_SECONDS:
+        print(f"[Weather] Cache HIT for ({rlat}, {rlon}), "
+              f"age={int(now - cached['timestamp'])}s")
+        return (cached['df'], True, cached['data_as_of'])
+
+    # Live fetch — try up to 5 days back from today
+    try:
+        today = datetime.now()
+        live_df = None
+        end_date_str = None
+        for days_back in range(1, 6):
+            end_dt = today - timedelta(days=days_back)
+            start_dt = end_dt - timedelta(days=44)  # 45 days total
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str   = end_dt.strftime('%Y-%m-%d')
+            try:
+                print(f"[Weather] Fetching NASA POWER for ({rlat}, {rlon}), "
+                      f"end_date={end_str} (attempt {days_back}/5)")
+                raw_df = _fetch_nasa_power(rlat, rlon, start_str, end_str)
+                if len(raw_df) > 0:
+                    live_df = raw_df
+                    end_date_str = end_str
+                    break
+            except Exception as fetch_err:
+                print(f"[Weather] Attempt {days_back} failed: {fetch_err}")
+                continue
+
+        if live_df is None:
+            raise RuntimeError("All 5 date attempts failed")
+
+        engineered = _engineer_features(live_df)
+
+        # Verify required columns exist
+        missing = [c for c in WEATHER_FEATURES if c not in engineered.columns]
+        if missing:
+            raise ValueError(f"Engineered data missing columns: {missing}")
+
+        # Store in cache
+        WEATHER_CACHE[cache_key] = {
+            'df': engineered,
+            'timestamp': now,
+            'data_as_of': end_date_str,
+        }
+        print(f"[Weather] Live fetch SUCCESS for ({rlat}, {rlon}), "
+              f"{len(engineered)} days, as_of={end_date_str}")
+        return (engineered, True, end_date_str)
+
+    except Exception as exc:
+        print(f"[Weather] Live fetch FAILED for ({rlat}, {rlon}): {exc}")
+        print(f"[Weather] FALLBACK → using static CSV weather data")
+        fallback_date = str(weather_df.index[-1].date()) if hasattr(
+            weather_df.index[-1], 'date') else str(weather_df.index[-1])
+        return (weather_df, False, fallback_date)
+
+
 print("All models ready. Starting API...")
 
 INTERVENTIONS = {
@@ -2099,8 +2253,9 @@ def analyze(
     # ── Confidence threshold check ──
     low_confidence = cnn_conf < 0.45
 
-    # ── LSTM ──
-    feat      = weather_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
+    # ── LSTM (live weather) ──
+    live_wx_df, used_live_data, data_as_of_date = get_live_weather(lat, lon)
+    feat      = live_wx_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
     feat_norm = weather_scaler.transform(feat)
     wx_tensor = torch.tensor(feat_norm).unsqueeze(0).to(DEVICE)
     with torch.inference_mode():
@@ -2177,6 +2332,10 @@ def analyze(
         **extras,
         'gradcam': gradcam_result,
         'image_diagnostics': diagnostics,
+        'weather_source': {
+            'live_data_used': used_live_data,
+            'data_as_of': data_as_of_date,
+        },
         'location': {'lat': lat, 'lon': lon},
         'timestamp': datetime.now().isoformat(),
     }
@@ -2243,7 +2402,8 @@ async def get_forecast(lat: float = 18.5204, lon: float = 73.8567,
     loop = asyncio.get_event_loop()
 
     def _run():
-        feat      = weather_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
+        live_wx_df, used_live_data, data_as_of_date = get_live_weather(lat, lon)
+        feat      = live_wx_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
         feat_norm = weather_scaler.transform(feat)
         wx_tensor = torch.tensor(feat_norm).unsqueeze(0).to(DEVICE)
         lstm_model.eval()
@@ -2270,6 +2430,10 @@ async def get_forecast(lat: float = 18.5204, lon: float = 73.8567,
                 }
                 for i in ranked_idx
             ],
+            'weather_source': {
+                'live_data_used': used_live_data,
+                'data_as_of': data_as_of_date,
+            },
             'timestamp': datetime.now().isoformat(),
         }
 
@@ -2319,7 +2483,8 @@ async def compare_crops(
     loop = asyncio.get_event_loop()
 
     def _run():
-        feat      = weather_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
+        live_wx_df, used_live_data, data_as_of_date = get_live_weather(lat, lon)
+        feat      = live_wx_df[WEATHER_FEATURES].values[-LOOKBACK:].astype(np.float32)
         feat_norm = weather_scaler.transform(feat)
         wx_tensor = torch.tensor(feat_norm).unsqueeze(0).to(DEVICE)
         lstm_model.eval()
@@ -2351,7 +2516,14 @@ async def compare_crops(
                                else 'MODERATE' if cal_probs.max() > 0.3
                                else 'LOW',
             }
-        return {'crops': results, 'timestamp': datetime.now().isoformat()}
+        return {
+            'crops': results,
+            'weather_source': {
+                'live_data_used': used_live_data,
+                'data_as_of': data_as_of_date,
+            },
+            'timestamp': datetime.now().isoformat(),
+        }
 
     try:
         return await loop.run_in_executor(_ML_POOL, _run)
@@ -2363,7 +2535,7 @@ async def compare_crops(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "api:app",
+        "backend.api:app",
         host="0.0.0.0",       # bind to all interfaces so ngrok can reach it
         port=8000,
         reload=False,          # keep False in production
