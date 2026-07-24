@@ -1,12 +1,14 @@
 // lib/services/api_service.dart
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/analysis_result.dart';
 
 class ApiService {
   static const String _baseUrlKey = 'api_base_url';
-  static const String _defaultUrl = 'http://10.0.2.2:8000'; // Android emulator
+  static String get _defaultUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000'; // Android emulator / Web
   // For physical device use your ngrok URL:
   // static const String _defaultUrl = 'https://xxxx.ngrok.io';
 
@@ -79,7 +81,7 @@ class ApiService {
 
   // ── Full analysis ──
   Future<AnalysisResult> analyzeLeaf({
-    required File imageFile,
+    required XFile imageFile,
     required double lat,
     required double lon,
     required String cropType,
@@ -91,10 +93,11 @@ class ApiService {
     int mcPasses = 30,
   }) async {
     try {
+      final bytes = await imageFile.readAsBytes();
       final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          imageFile.path,
-          filename: 'leaf.jpg',
+        'file': MultipartFile.fromBytes(
+          bytes,
+          filename: imageFile.name.isNotEmpty ? imageFile.name : 'leaf.jpg',
         ),
         'lat': lat,
         'lon': lon,
@@ -118,19 +121,14 @@ class ApiService {
             : (raw is Map ? Map<String, dynamic>.from(raw) : null);
 
         if (data != null && data['error'] == 'image_quality_rejected') {
-          throw QualityRejectionException(
-            reason: data['reason'] ?? 'Unknown quality issue',
-            suggestions: List<String>.from(data['suggestions'] ?? []),
-            score: (data['score'] ?? 0).toDouble(),
-            metrics: Map<String, dynamic>.from(data['metrics'] ?? {}),
-          );
+          throw ImageQualityRejectedException.fromJson(data);
         }
         final reason = data?['reason'] ?? data?['detail'] ?? 'Unprocessable request (422)';
         throw ApiException('Analysis failed: $reason');
       }
 
       return AnalysisResult.fromJson(Map<String, dynamic>.from(resp.data));
-    } on QualityRejectionException {
+    } on ImageQualityRejectedException {
       rethrow;
     } on DioException catch (e) {
       throw ApiException('Analysis failed: ${e.message}');

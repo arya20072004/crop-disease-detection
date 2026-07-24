@@ -10,6 +10,7 @@ class AnalysisResult {
   final Map<String, dynamic>? gradcam;
   final SegmentationData? segmentation;
   final QualityData? quality;
+  final ImageDiagnostics? imageDiagnostics;
 
   AnalysisResult({
     required this.cnn,
@@ -21,6 +22,7 @@ class AnalysisResult {
     this.gradcam,
     this.segmentation,
     this.quality,
+    this.imageDiagnostics,
   });
 
   factory AnalysisResult.fromJson(Map<String, dynamic> j) => AnalysisResult(
@@ -42,6 +44,7 @@ class AnalysisResult {
       gradcam: j['gradcam'] != null ? Map<String, dynamic>.from(j['gradcam']) : null,
       segmentation: j['segmentation'] != null ? SegmentationData.fromJson(j['segmentation']) : null,
       quality: j['quality'] != null ? QualityData.fromJson(j['quality']) : null,
+      imageDiagnostics: j['image_diagnostics'] != null ? ImageDiagnostics.fromJson(j['image_diagnostics']) : null,
     );
 
   Map<String, dynamic> toJson() => {
@@ -54,6 +57,7 @@ class AnalysisResult {
         'gradcam': gradcam,
         'segmentation': segmentation?.toJson(),
         'quality': quality?.toJson(),
+        'image_diagnostics': imageDiagnostics?.toJson(),
       };
 }
 
@@ -61,11 +65,13 @@ class CnnResult {
   final String detected;
   final double confidence;
   final List<CnnTop5> top5;
+  final bool lowConfidence;
 
   CnnResult({
     required this.detected,
     required this.confidence,
     required this.top5,
+    this.lowConfidence = false,
   });
 
   factory CnnResult.fromJson(Map<String, dynamic> j) => CnnResult(
@@ -74,12 +80,14 @@ class CnnResult {
         top5: (j['top5'] as List? ?? [])
             .map((e) => CnnTop5.fromJson(e))
             .toList(),
+        lowConfidence: j['low_confidence'] ?? false,
       );
 
   Map<String, dynamic> toJson() => {
         'detected': detected,
         'confidence': confidence,
         'top5': top5.map((e) => e.toJson()).toList(),
+        'low_confidence': lowConfidence,
       };
 }
 
@@ -466,22 +474,56 @@ class QualityData {
       };
 }
 
+// ── Image Diagnostics ──
+class ImageDiagnostics {
+  final double qualityScore;
+  final List<String> qualityWarnings;
+  final double leafCoverage;
+  final String? segmentationWarning;
+
+  ImageDiagnostics({
+    required this.qualityScore,
+    required this.qualityWarnings,
+    required this.leafCoverage,
+    this.segmentationWarning,
+  });
+
+  factory ImageDiagnostics.fromJson(Map<String, dynamic> j) => ImageDiagnostics(
+        qualityScore: (j['quality_score'] ?? 0).toDouble(),
+        qualityWarnings: List<String>.from(j['quality_warnings'] ?? []),
+        leafCoverage: (j['leaf_coverage'] ?? 0).toDouble(),
+        segmentationWarning: j['segmentation_warning'],
+      );
+
+  Map<String, dynamic> toJson() => {
+        'quality_score': qualityScore,
+        'quality_warnings': qualityWarnings,
+        'leaf_coverage': leafCoverage,
+        'segmentation_warning': segmentationWarning,
+      };
+}
+
 // ── Exceptions ──
 class ApiException implements Exception {
   final String message;
   ApiException(this.message);
 }
 
-class QualityRejectionException implements Exception {
+class ImageQualityRejectedException implements Exception {
   final String reason;
   final List<String> suggestions;
   final double score;
-  final Map<String, dynamic> metrics;
 
-  QualityRejectionException({
+  ImageQualityRejectedException({
     required this.reason,
     required this.suggestions,
     required this.score,
-    required this.metrics,
   });
+
+  factory ImageQualityRejectedException.fromJson(Map<String, dynamic> j) =>
+      ImageQualityRejectedException(
+        reason: j['reason'] ?? 'Unknown quality issue',
+        suggestions: List<String>.from(j['suggestions'] ?? []),
+        score: (j['score'] ?? 0).toDouble(),
+      );
 }

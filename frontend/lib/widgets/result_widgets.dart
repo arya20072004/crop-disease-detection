@@ -24,8 +24,16 @@ class AnalysisResultWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Quality warnings banner
-        if (result.quality != null && result.quality!.warnings.isNotEmpty)
+        // Caveat banner for borderline quality/confidence
+        if (result.cnn.lowConfidence ||
+            (result.imageDiagnostics != null &&
+                (result.imageDiagnostics!.qualityWarnings.isNotEmpty ||
+                 result.imageDiagnostics!.segmentationWarning != null)))
+          CaveatBanner(
+            lowConfidence: result.cnn.lowConfidence,
+            diagnostics: result.imageDiagnostics,
+          ),
+        if (result.quality != null && result.quality!.warnings.isNotEmpty && result.imageDiagnostics == null)
           QualityWarningsBanner(warnings: result.quality!.warnings),
         CnnCard(cnn: result.cnn, gradcam: result.gradcam),
         const SizedBox(height: 12),
@@ -734,6 +742,79 @@ class QualityWarningsBanner extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 4),
             child: Text('• $w', style: const TextStyle(fontSize: 12)),
           )),
+        ],
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════
+// CAVEAT BANNER
+// ══════════════════════════════════════════
+
+class CaveatBanner extends StatefulWidget {
+  final bool lowConfidence;
+  final ImageDiagnostics? diagnostics;
+
+  const CaveatBanner({
+    super.key,
+    required this.lowConfidence,
+    this.diagnostics,
+  });
+
+  @override
+  State<CaveatBanner> createState() => _CaveatBannerState();
+}
+
+class _CaveatBannerState extends State<CaveatBanner> {
+  bool _dismissed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_dismissed) return const SizedBox.shrink();
+
+    final warnings = <String>[];
+    if (widget.lowConfidence) {
+      warnings.add('Photo quality was borderline — result may be less accurate.');
+    }
+    if (widget.diagnostics != null) {
+      if (widget.diagnostics!.qualityWarnings.isNotEmpty) {
+        warnings.addAll(widget.diagnostics!.qualityWarnings);
+      }
+      if (widget.diagnostics!.segmentationWarning != null) {
+        warnings.add(widget.diagnostics!.segmentationWarning!);
+      }
+    }
+
+    if (warnings.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.riskModerate.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.riskModerate.withOpacity(0.5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 20, color: AppTheme.riskModerate),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: warnings.map((w) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(w, style: const TextStyle(fontSize: 13, height: 1.3)),
+              )).toList(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: () => setState(() => _dismissed = true),
+            child: Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+          ),
         ],
       ),
     );

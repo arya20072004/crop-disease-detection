@@ -5,6 +5,7 @@
 // lib/screens/analyze_screen.dart
 import 'dart:io';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
@@ -22,7 +23,7 @@ class AnalyzeScreen extends StatefulWidget {
 }
 
 class _AnalyzeScreenState extends State<AnalyzeScreen> {
-  File? _image;
+  XFile? _image;
   AnalysisResult? _result;
   bool _loading = false;
   String? _error;
@@ -85,7 +86,7 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
       imageQuality: 85,
       maxWidth: 1024,
     );
-    if (xf != null) setState(() { _image = File(xf.path); _result = null; });
+    if (xf != null) setState(() { _image = xf; _result = null; });
   }
 
   Future<void> _analyze() async {
@@ -176,7 +177,7 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
       setState(() { _result = result; _loading = false; _isOffline = false; });
     } catch (e) {
       if (!mounted) return;
-      if (e is QualityRejectionException) {
+      if (e is ImageQualityRejectedException) {
         _showQualityRejectionDialog(e);
       } else {
         setState(() { _error = e.toString(); _loading = false; });
@@ -184,7 +185,7 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
     }
   }
 
-  void _showQualityRejectionDialog(QualityRejectionException e) {
+  void _showQualityRejectionDialog(ImageQualityRejectedException e) {
     setState(() { _loading = false; });
     if (!mounted) return;
     showModalBottomSheet(
@@ -194,7 +195,6 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
       builder: (_) => _QualityRejectionSheet(
         reason: e.reason,
         suggestions: e.suggestions,
-        score: e.score,
         onRetake: () {
           Navigator.pop(context);
           _showImagePicker(context);
@@ -254,7 +254,9 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
                 child: _image != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(16),
-                        child: Image.file(_image!, fit: BoxFit.cover),
+                        child: kIsWeb
+                            ? Image.network(_image!.path, fit: BoxFit.cover)
+                            : Image.file(File(_image!.path), fit: BoxFit.cover),
                       )
                     : Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -668,21 +670,13 @@ class _NumericFieldState extends State<_NumericField> {
 class _QualityRejectionSheet extends StatelessWidget {
   final String reason;
   final List<String> suggestions;
-  final double score;
   final VoidCallback onRetake;
 
   const _QualityRejectionSheet({
     required this.reason,
     required this.suggestions,
-    required this.score,
     required this.onRetake,
   });
-
-  Color get _scoreColor {
-    if (score >= 80) return Colors.green;
-    if (score >= 55) return Colors.orange;
-    return Colors.red;
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -714,29 +708,13 @@ class _QualityRejectionSheet extends StatelessWidget {
           // Title row
           Row(
             children: [
-              const Icon(Icons.warning_amber_rounded,
-                  color: Colors.orange, size: 26),
+              Icon(Icons.warning_amber_rounded,
+                  color: AppTheme.riskHigh, size: 26),
               const SizedBox(width: 10),
               const Expanded(
                 child: Text('Photo Quality Issue',
                     style: TextStyle(
                         fontSize: 18, fontWeight: FontWeight.bold)),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _scoreColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: _scoreColor.withOpacity(0.4)),
-                ),
-                child: Text(
-                  '${score.toStringAsFixed(0)}/100',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: _scoreColor),
-                ),
               ),
             ],
           ),

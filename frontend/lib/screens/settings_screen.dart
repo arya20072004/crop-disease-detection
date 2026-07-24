@@ -136,8 +136,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      ElevatedButton(
-                          onPressed: _saveUrl, child: const Text('Save & Test')),
+                      Expanded(
+                        child: ElevatedButton(
+                            onPressed: _saveUrl, child: const Text('Save & Test')),
+                      ),
                       const SizedBox(width: 8),
                       TextButton(
                         onPressed: () {
