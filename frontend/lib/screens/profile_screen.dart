@@ -587,6 +587,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               MaterialPageRoute(
                   builder: (_) => const AppPreferencesScreen()));
         }),
+        Divider(color: th.dividerColor, height: 1),
+        _accountTile(context, Icons.compare_arrows_outlined, 'Compare Crops', () {
+          Navigator.pushNamed(context, '/compare');
+        }),
       ],
     );
   }

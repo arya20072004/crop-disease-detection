@@ -102,7 +102,6 @@ class _MainShellState extends ConsumerState<MainShell> {
     HomeScreen(onTabSwitch: _switchTab),
     const AnalyzeScreen(),
     const ForecastScreen(),
-    const CompareScreen(),
     const HistoryScreen(),
     const ProfileScreen(),
   ];
@@ -139,11 +138,6 @@ class _MainShellState extends ConsumerState<MainShell> {
             icon: const Icon(Icons.wb_sunny_outlined),
             selectedIcon: Icon(Icons.wb_sunny, color: cs.primary),
             label: l?.translate('next_7_days') ?? 'Forecast',
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.bar_chart_outlined),
-            selectedIcon: Icon(Icons.bar_chart, color: cs.primary),
-            label: l?.translate('compare') ?? 'Compare',
           ),
           NavigationDestination(
             icon: const Icon(Icons.history_outlined),

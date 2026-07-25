@@ -156,6 +156,72 @@ class DBService {
       print('[DBService] savePredictionHistory: error — $e');
     }
   }
+
+  // ── Treatment Logs ────────────────────────────────────────────────────────
+
+  Future<List<Map<String, dynamic>>> getTreatmentLogs() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return [];
+    try {
+      final response = await supabase
+          .from('treatment_logs')
+          .select('*, crops(name), predictions(confidence, disease)')
+          .eq('user_id', user.id)
+          .order('application_date', ascending: false);
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      print('[DBService] getTreatmentLogs error: $e');
+      return [];
+    }
+  }
+
+  Future<void> saveTreatmentLog(Map<String, dynamic> logData) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    try {
+      final payload = {'user_id': user.id, ...logData};
+      await supabase.from('treatment_logs').insert(payload);
+    } catch (e) {
+      print('[DBService] saveTreatmentLog error: $e');
+    }
+  }
+
+  // ── Risk Alerts ───────────────────────────────────────────────────────────
+
+  Future<int> getUnreadAlertsCount() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return 0;
+    try {
+      final response = await supabase
+          .from('risk_alerts')
+          .select('id')
+          .eq('user_id', user.id)
+          .isFilter('notified_at', null); // assuming null means unread
+      return (response as List).length;
+    } catch (e) {
+      print('[DBService] getUnreadAlertsCount error: $e');
+      return 0;
+    }
+  }
+
+  // ── Forecast Fetching ─────────────────────────────────────────────────────
+
+  Future<List<Map<String, dynamic>>> getLatestForecasts() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return [];
+    try {
+      final response = await supabase
+          .from('forecasts')
+          .select()
+          .eq('user_id', user.id)
+          .order('created_at', ascending: false)
+          .limit(10);
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      print('[DBService] getLatestForecasts error: $e');
+      return [];
+    }
+  }
 }
 
 // ── Recommendation lookup ─────────────────────────────────────────────────────

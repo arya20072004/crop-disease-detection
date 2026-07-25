@@ -81,7 +81,17 @@ class _ForecastScreenState extends State<ForecastScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(l?.translate('next_7_days') ?? 'Next 7 Days'),
-        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _fetch)],
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.compare_arrows),
+            tooltip: l?.translate('compare') ?? 'Compare across crops',
+            onPressed: () => Navigator.pushNamed(context, '/compare'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetch,
+          ),
+        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
